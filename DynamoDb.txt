@@ -1,0 +1,405 @@
+Generate express.js app using express geneator
+
+install package aws-sdk
+
+create database.js in helper folder as
+
+var AWS = require('aws-sdk');
+
+AWS.config.update({
+    region: "local",
+    endpoint: "http://localhost:8001"
+});
+
+const db = new AWS.DynamoDB.DocumentClient({ convertEmptyValues: true });
+const DynamoDB = new AWS.DynamoDB();
+
+function createTable() {
+    const params = {
+        TableName: "Users",
+        KeySchema: [
+            {
+                AttributeName: "UserID",
+                KeyType: "HASH"
+            },
+            {
+                AttributeName: 'UserName',
+                KeyType: 'RANGE'
+            }
+        ],
+        AttributeDefinitions: [
+            { AttributeName: "UserID", AttributeType: "S" },
+            { AttributeName: "UserName", AttributeType: "S" }
+        ],
+        ProvisionedThroughput: {
+            ReadCapacityUnits: 10,
+            WriteCapacityUnits: 10,
+        },
+    };
+
+    DynamoDB.createTable(params, function (err, data) {
+        if (err) {
+            console.error("Unable to create table", err);
+        } else {
+            console.log("Created table", data);
+        }
+    });
+}
+
+createTable()
+
+module.exports = db;
+
+Then inside repository folder create userController.repository.js as
+const db = require('../helpers/database')
+const { v4: uuidv4 } = require('uuid');
+
+class UserRepository {
+    constructor() {
+        this.tableName = 'Users';
+    }
+
+    async findByID(UserID, UserName) {
+        console.log(UserID,UserName)
+        
+        const params = {
+            TableName: this.tableName,
+            Key: {
+                UserID,
+                UserName
+            },
+        };
+
+        return await db.get(params).promise();
+    }
+
+    async findByEmail(Email) {
+        const params = {
+            TableName: this.tableName,
+            FilterExpression: 'Email = :Email',
+            ExpressionAttributeValues: {
+                ':Email': Email
+            },
+        };
+
+        return await db.scan(params).promise();
+    }
+
+    async findByName(firstName, lastName) {
+        console.log("findByName", firstName, lastName)
+        const params = {
+            TableName: this.tableName,
+            FilterExpression: 'FirstName = :firstName AND LastName =:lastName AND contains ( Email , :emailProvider )',
+            ExpressionAttributeValues: {
+                ':firstName': firstName,
+                ':lastName': lastName,
+                ':emailProvider': "gmail.com"
+            },
+        };
+
+        return await db.scan(params).promise();
+    }
+
+
+    async findAll() {
+        const params = {
+            TableName: this.tableName
+        };
+
+        return await db.scan(params).promise();
+    }
+
+
+    async create(data) {
+        const params = {
+            TableName: this.tableName,
+            Item: {
+                UserID: uuidv4(),
+                UserName: data.UserName,
+                Email: data.Email,
+                Password: data.Password,
+                FirstName: data.FirstName,
+                LastName: data.LastName
+            },
+        };
+
+        await db.put(params).promise();
+
+        return params.Item;
+    }
+
+    async put(UserID, data) {
+        console.log("update", data)
+        console.log("UserID", UserID)
+
+        const params = {
+            TableName: this.tableName,
+            Item: {
+                "UserName": data.UserName,
+                "FirstName": data.FirstName,
+                "LastName": data.LastName,
+                "Password": data.Password,
+                "Email": data.Email,
+                "UserID": UserID
+            }
+        }
+        return await db.put(params).promise();
+    }
+
+
+    async update(UserID, data) {
+        console.log("update", data)
+        console.log("UserID", UserID)
+
+        const params = {
+            TableName: this.tableName,
+            Key: {
+                "UserID": UserID,
+                "UserName": data.UserName
+            },
+            UpdateExpression:
+                'set #FirstName = :v_FirstName, #LastName = :v_LastName,#Email=:v_Email,#Password=:v_Password',
+            ExpressionAttributeNames: {
+                '#FirstName': 'FirstName',
+                '#LastName': 'LastName',
+                '#Email': 'Email',
+                '#Password': 'Password'
+            },
+            ExpressionAttributeValues: {
+                ':v_FirstName': data.FirstName,
+                ':v_LastName': data.LastName,
+                ':v_Email': data.Email,
+                ':v_Password': data.Password
+            },
+            ReturnValues: "ALL_NEW"
+        }
+        return await db.update(params).promise();
+    }
+
+
+    async deleteByID(UserID, UserName) {
+        console.log("DeleteById", UserID)
+        const params = {
+            TableName: this.tableName,
+            Key: {
+                UserID,
+                UserName
+            },
+        };
+
+        return await db.delete(params).promise();
+    }
+}
+
+module.exports = new UserRepository();
+
+create controller folder in this create user.controller.js add following to It
+
+const UserService = require(`../service/user.service`);
+
+class UserController {
+
+    async findByID(req, res) {
+        const data = await UserService.findByID(req.params.UserID,req.params.UserName)
+
+        res.json(data)
+    }
+
+    async findByEmail(req, res) {
+        const data = await UserService.findByEmail(req.body.email)
+        res.json(data)
+    }
+
+    async findByName(req, res) {
+        const data = await UserService.findByName(req.body.firstName,req.body.lastName)
+        res.json(data)
+    }
+
+    async login(req, res) {
+        const data = await UserService.findByEmail(req.body.email)
+        if (!data.length) {
+            res.json({ msg: "invalid username or password" })
+        } else if (data[0].Password == req.body.password) {
+            res.json({ msg: "Login Sucessfull" })
+        } else {
+            res.json({ msg: "invalid username or password" })
+        }
+    }
+
+    async create(req, res) {
+        const emailUniqueness = await UserService.findByEmail(req.body.email)
+        if (emailUniqueness && emailUniqueness.length) {
+            res.json({ "msg": "Email Already in Use" })
+        } else {
+            const data = await UserService.create(req.body)
+            res.json(data)
+        }
+    }
+
+    async update(req, res) {
+        const data = await UserService.update(req.params.UserID, req.body)
+        res.json(data)
+    }
+
+    async deleteByID(req, res) {
+        await UserService.deleteByID(req.params.UserID,req.params.UserName)
+        res.json(`Success`)
+    }
+
+    async findAll(req, res) {
+        const data = await UserService.findAll()
+        res.json(data)
+    }
+
+
+}
+
+module.exports = new UserController()
+
+inside service folder add user.service.js add following code
+
+const UserRepository = require(`../repository/user.repository`);
+
+class UserService {
+
+    async findByID(UserID,UserName) {
+        const data = await UserRepository.findByID(UserID,UserName);
+
+        if (data) {
+            return data.Item;
+        }
+
+        return data;
+    }
+
+
+
+    async findByEmail(Email) {
+        const data = await UserRepository.findByEmail(Email);
+        if (data) {
+            return data.Items;
+        }
+
+        return data;
+    }
+
+    async findByName(firstName,lastName) {
+        const data = await UserRepository.findByName(firstName,lastName);
+        if (data) {
+            return data.Items;
+        }
+
+        return data;
+    }
+
+    async create(data) {
+        return await UserRepository.create({
+            UserName: data.userName,
+            Email: data.email,
+            Password: data.password,
+            FirstName: data.firstName,
+            LastName: data.lastName
+        });
+    }
+
+    async update(UserID, data) {
+        return await UserRepository.update(UserID, {
+            UserName: data.userName,
+            Email: data.email,
+            Password: data.password,
+            FirstName: data.firstName,
+            LastName: data.lastName
+        });
+    }
+
+    async deleteByID(UserID,UserName) {
+        return await UserRepository.deleteByID(UserID,UserName);
+    }
+
+
+    async findAll() {
+        return await UserRepository.findAll();
+    }
+}
+
+module.exports = new UserService()
+
+
+then in users route add following
+
+var express = require('express');
+var router = express.Router();
+const UserController = require('../controller/user.controller');
+
+router.get(`/`, UserController.findAll);
+router.get(`/:UserID/:UserName`, UserController.findByID);
+router.post(`/`, UserController.create);
+router.patch(`/:UserID`, UserController.update);
+router.delete(`/:UserID/:UserName`, UserController.deleteByID);
+router.post(`/findByEmail`, UserController.findByEmail);
+router.post(`/login`, UserController.login);
+router.post(`/findByName`, UserController.findByName);
+
+
+
+module.exports = router;
+
+You need to run dynamodb locally with 
+
+java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -sharedDb -port 8001
+
+Now You can test application using postman 
+
+for create user:
+curl --location --request POST 'localhost:3000/users' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "userName":"sangram2681",
+    "email":"sangram2681@gmail.com",
+    "password":"sangram$81",
+    "firstName":"sangram",
+    "lastName":"desai"
+}'
+
+Get All User:
+
+curl --location --request GET 'http://localhost:3000/users/'
+
+For Delete User 
+
+curl --location --request DELETE 'http://localhost:3000/users/4fadf9ba-20c2-44bd-a485-833ba7304b29/sangram2681'
+
+For Update User:
+curl --location --request PATCH 'http://localhost:3000/users/4fadf9ba-20c2-44bd-a485-833ba7304b29' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "userName":"sangram2681",
+    "email":"mail.sangram.desai@gmail.com",
+    "password":"sangram@786123",
+    "firstName":"jitendra",
+    "lastName":"jadhav"
+}'
+
+Find ByEmail Id:
+curl --location --request POST 'http://localhost:3000/users/findByEmail' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "email":"sachin2152@gmail.com"
+}'
+
+Login:
+curl --location --request POST 'localhost:3000/users/login' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "email":"sangram2681@gmail.com",
+    "password":"sangram#81"
+}'
+
+Find By Name
+
+curl --location --request POST 'http://localhost:3000/users/findByName' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "firstName":"sagar",
+    "lastName":"desai"
+}'
